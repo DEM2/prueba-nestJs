@@ -1,19 +1,16 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsEmail,
-  IsIn,
   IsNotEmpty,
-  IsOptional,
   IsString,
   MaxLength,
   MinLength,
 } from 'class-validator';
 
-import { UserRole } from '../../users/entities/user.entity';
-
-/** Roles que se pueden elegir en el registro público (ADMIN no) */
-export const SELF_REGISTER_ROLES = [UserRole.TECHNICIAN, UserRole.MANAGER];
-
+/**
+ * Registro público: siempre crea usuarios TECHNICIAN.
+ * Los ADMIN solo los crea otro ADMIN (POST /users) o el seeder.
+ */
 export class RegisterDto {
   @ApiProperty({ example: 'Laura Gómez' })
   @IsString()
@@ -30,14 +27,4 @@ export class RegisterDto {
   @IsString()
   @MinLength(8, { message: 'La contraseña debe tener al menos 8 caracteres' })
   password: string;
-
-  @ApiPropertyOptional({
-    enum: SELF_REGISTER_ROLES,
-    default: UserRole.TECHNICIAN,
-  })
-  @IsOptional()
-  @IsIn(SELF_REGISTER_ROLES, {
-    message: `El rol debe ser uno de: ${SELF_REGISTER_ROLES.join(', ')}. Los ADMIN solo los crea otro ADMIN`,
-  })
-  role?: UserRole;
 }

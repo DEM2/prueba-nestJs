@@ -1,7 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { verify } from 'argon2';
+import { compare } from 'bcrypt';
 
 import { UserRole } from '../users/entities/user.entity';
 import { UsersService } from '../users/users.service';
@@ -17,13 +17,10 @@ export class AuthService {
   ) {}
 
   /** Registro público: si no envían rol, queda como TECHNICIAN */
+  /** Registro público: siempre crea un TECHNICIAN */
   async register(dto: RegisterDto) {
-    return this.usersService.create({
-      ...dto,
-      role: dto.role ?? UserRole.TECHNICIAN,
-    });
+    return this.usersService.create({ ...dto, role: UserRole.TECHNICIAN });
   }
-
   /**
    * Login: valida correo + contraseña y devuelve un JWT.
    * Se usa el MISMO mensaje para "no existe" y "contraseña incorrecta"
@@ -33,7 +30,7 @@ export class AuthService {
     const user = await this.usersService.findByEmail(dto.email);
 
     const validPassword =
-      user !== null && (await verify(user.password, dto.password));
+      user !== null && (await compare(dto.password, user.password));
 
     if (!user || !validPassword) {
       throw new UnauthorizedException('Correo o contraseña incorrectos');

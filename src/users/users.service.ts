@@ -1,9 +1,12 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { hash } from 'argon2';
+import { hash } from 'bcrypt';
 import { Repository } from 'typeorm';
 
 import { User, UserRole } from './entities/user.entity';
+
+/** Rondas de bcrypt: 10 es el estándar (más alto = más seguro pero más lento) */
+const SALT_ROUNDS = 10;
 
 /** Datos necesarios para crear un usuario (vienen del registro o de un ADMIN) */
 export interface CreateUserData {
@@ -35,7 +38,7 @@ export class UsersService {
     const user = this.usersRepository.create({
       name: data.name.trim(),
       email,
-      password: await hash(data.password),
+      password: await hash(data.password, SALT_ROUNDS),
       role: data.role,
     });
     const saved = await this.usersRepository.save(user);
