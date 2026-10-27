@@ -19,10 +19,14 @@ const config: Config = {
   },
   moduleNameMapper: pathsToModuleNameMapper(paths, { prefix: '<rootDir>/' }),
   collectCoverageFrom: [
-    'src/**/*.(t|j)s',
-    'libs/**/*.(t|j)s',
-    'apps/**/*.(t|j)s',
+    'src/**/*.service.ts',
+    'src/common/guards/**/*.ts',
+    'src/common/filters/**/*.ts',
+    'src/common/interceptors/**/*.ts',
   ],
+  coverageThreshold: {
+    global: { lines: 40 },
+  },
   coverageDirectory: './coverage',
   testEnvironment: 'node',
 };
