@@ -13,14 +13,14 @@ export class AuthController {
  
   @Public()
   @Post('register')
-  @ApiOperation({ summary: 'Registro público (TECHNICIAN o MANAGER)' })
+  @ApiOperation({ summary: 'Registro público (TECHNICIAN)' })
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
   
   @Public()
   @Post('login')
-  @HttpCode(HttpStatus.OK) // Un login no crea nada: 200 en vez de 201
+  @HttpCode(HttpStatus.OK) 
   @ApiOperation({ summary: 'Inicia sesión y devuelve un JWT' })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);

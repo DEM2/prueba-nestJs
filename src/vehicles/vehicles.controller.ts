@@ -32,13 +32,13 @@ export class VehiclesController {
   }
 
   @Get() 
-  @ApiOperation({ summary: 'Listar vehículos (filtro opcional por estado)' })
+  @ApiOperation({ summary: 'Listar vehículos ' })
   findAll(@Query() query: FindVehiclesQueryDto) {
     return this.vehiclesService.findAll(query);
   }
 
   @Get(':idOrPlate')
-  @ApiOperation({ summary: 'Consultar vehículo por id (UUID) o por placa' })
+  @ApiOperation({ summary: 'Consultar vehículo por id o por placa' })
   findOne(@Param('idOrPlate') idOrPlate: string) {
     return this.vehiclesService.findOne(idOrPlate);
   }
