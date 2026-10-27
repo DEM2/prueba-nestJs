@@ -4,11 +4,12 @@ import {
   Get,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-
+import { UpdateMaintenanceStatusDto } from './dto/update-maintenance-status.dto';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorators';
 import type { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
@@ -26,8 +27,11 @@ export class MaintenancesController {
 
   @Post()
   @ApiOperation({ summary: 'Crear mantenimiento (ADMIN). Estado inicial: SCHEDULED' })
-  create(@Body() dto: CreateMaintenanceDto) {
-    return this.maintenancesService.create(dto);
+  create(
+    @Body() dto: CreateMaintenanceDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.maintenancesService.create(dto, user);
   }
 
   @Get()
@@ -76,5 +80,24 @@ export class MaintenancesController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.maintenancesService.findOneForUser(id, user);
+  }
+
+    @Get(':id/logs')
+  @ApiOperation({ summary: 'Auditoría de cambios de estado (ADMIN)' })
+  findLogs(@Param('id', ParseUUIDPipe) id: string) {
+    return this.maintenancesService.findLogs(id);
+  }
+
+  @Patch(':id/status')
+  @Roles(UserRole.ADMIN, UserRole.TECHNICIAN)
+  @ApiOperation({
+    summary: 'Cambiar estado (TECHNICIAN solo los suyos). COMPLETED exige datos de cierre',
+  })
+  updateStatus(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateMaintenanceStatusDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.maintenancesService.updateStatus(id, dto, user);
   }
 }

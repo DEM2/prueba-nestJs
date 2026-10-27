@@ -8,6 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import {
   DataSource,
+  EntityManager,
   FindOptionsRelations,
   In,
   LessThan,
@@ -23,6 +24,8 @@ import { Vehicle, VehicleStatus } from '../vehicles/entities/vehicle.entity';
 import { Workshop, WorkshopStatus } from '../workshops/entities/workshop.entity';
 import { CreateMaintenanceDto } from './dto/create-maintenance.dto';
 import { FindMaintenancesQueryDto } from './dto/find-maintenances-query.dto';
+import { UpdateMaintenanceStatusDto } from './dto/update-maintenance-status.dto';
+import { MaintenanceStatusLog } from './entities/maintenance-status-log.entity';
 import { Maintenance } from './entities/maintenance.entity';
 import {
   ACTIVE_MAINTENANCE_STATUSES,
@@ -36,11 +39,30 @@ const FULL_RELATIONS: FindOptionsRelations<Maintenance> = {
   workshop: true,
 };
 
+/**
+ * Máquina de estados: a qué estados se puede pasar desde cada estado.
+ * COMPLETED y CANCELLED son finales (lista vacía).
+ */
+const ALLOWED_TRANSITIONS: Record<MaintenanceStatus, MaintenanceStatus[]> = {
+  [MaintenanceStatus.SCHEDULED]: [
+    MaintenanceStatus.IN_PROGRESS,
+    MaintenanceStatus.CANCELLED,
+  ],
+  [MaintenanceStatus.IN_PROGRESS]: [
+    MaintenanceStatus.COMPLETED,
+    MaintenanceStatus.CANCELLED,
+  ],
+  [MaintenanceStatus.COMPLETED]: [],
+  [MaintenanceStatus.CANCELLED]: [],
+};
+
 @Injectable()
 export class MaintenancesService {
   constructor(
     @InjectRepository(Maintenance)
     private readonly maintenancesRepository: Repository<Maintenance>,
+    @InjectRepository(MaintenanceStatusLog)
+    private readonly logsRepository: Repository<MaintenanceStatusLog>,
     private readonly mechanicsService: MechanicsService,
     private readonly dataSource: DataSource,
   ) {}
@@ -59,7 +81,10 @@ export class MaintenancesService {
    * o mecánico, la segunda espera a que termine la primera y entonces ya ve
    * el mantenimiento creado. Así se evitan duplicados por concurrencia.
    */
-  async create(dto: CreateMaintenanceDto): Promise<Maintenance> {
+  async create(
+    dto: CreateMaintenanceDto,
+    user: AuthenticatedUser,
+  ): Promise<Maintenance> {
     if (dto.scheduledEnd <= dto.scheduledStart) {
       throw new BadRequestException(
         'scheduledEnd debe ser posterior a scheduledStart',
@@ -156,12 +181,165 @@ export class MaintenancesService {
       });
       const saved = await manager.save(maintenance);
 
-      // (En el Paso 6B aquí se registra la auditoría)
+      // Auditoría: registro de creación (sin estado anterior)
+      await this.writeLog(manager, saved.id, null, MaintenanceStatus.SCHEDULED, user.id, 'Creación');
 
       return saved.id;
     });
 
     return this.findOne(maintenanceId);
+  }
+
+  // =====================================================================
+  // CAMBIO DE ESTADO
+  // =====================================================================
+
+  /**
+   * Cambia el estado de un mantenimiento aplicando la máquina de estados
+   * y actualizando automáticamente el estado del vehículo.
+   *
+   * TRANSACCIÓN: el cambio del mantenimiento, el cambio del vehículo y el
+   * registro de auditoría se guardan juntos. Si uno falla, no se guarda
+   * ninguno: nunca queda un mantenimiento COMPLETED con el vehículo
+   * todavía IN_MAINTENANCE.
+   * Se bloquea la fila del mantenimiento para que dos usuarios no lo cambien
+   * a la vez (ej: uno lo completa mientras otro lo cancela).
+   */
+  async updateStatus(
+    id: string,
+    dto: UpdateMaintenanceStatusDto,
+    user: AuthenticatedUser,
+  ): Promise<Maintenance> {
+    await this.findOneForUser(id, user); // 404 si no existe, 403 si no es suyo
+
+    await this.dataSource.transaction(async (manager) => {
+      const maintenance = await manager.findOneOrFail(Maintenance, {
+        where: { id },
+        lock: { mode: 'pessimistic_write' },
+      });
+      const vehicle = await manager.findOneOrFail(Vehicle, {
+        where: { id: maintenance.vehicleId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      const from = maintenance.status;
+      const to = dto.status;
+      this.assertTransitionAllowed(from, to);
+
+      switch (to) {
+        case MaintenanceStatus.IN_PROGRESS:
+          if (vehicle.status === VehicleStatus.INACTIVE) {
+            throw new ConflictException(
+              `El vehículo ${vehicle.plate} está INACTIVE; no se puede iniciar el mantenimiento`,
+            );
+          }
+          maintenance.startedAt = new Date();
+          vehicle.status = VehicleStatus.IN_MAINTENANCE; // Regla: IN_PROGRESS -> IN_MAINTENANCE
+          break;
+
+        case MaintenanceStatus.COMPLETED:
+          this.applyClosure(maintenance, vehicle, dto);
+          vehicle.status = VehicleStatus.AVAILABLE; // Regla: COMPLETED -> AVAILABLE
+          break;
+
+        case MaintenanceStatus.CANCELLED:
+          // Si ya estaba en el taller, el vehículo vuelve a estar disponible
+          if (from === MaintenanceStatus.IN_PROGRESS) {
+            vehicle.status = VehicleStatus.AVAILABLE;
+          }
+          break;
+      }
+
+      maintenance.status = to;
+      await manager.save(maintenance);
+      await manager.save(vehicle);
+      await this.writeLog(manager, maintenance.id, from, to, user.id, dto.note ?? null);
+    });
+
+    return this.findOne(id);
+  }
+
+  /** Valida la transición y lanza un 409 con un mensaje claro si no se permite */
+  private assertTransitionAllowed(from: MaintenanceStatus, to: MaintenanceStatus): void {
+    if (from === to) {
+      throw new ConflictException(`El mantenimiento ya está en estado ${to}`);
+    }
+    if (from === MaintenanceStatus.COMPLETED) {
+      throw new ConflictException(
+        'Un mantenimiento COMPLETED no puede regresar a un estado anterior',
+      );
+    }
+    if (from === MaintenanceStatus.CANCELLED) {
+      throw new ConflictException(
+        `Un mantenimiento CANCELLED no puede cambiar a ${to}`,
+      );
+    }
+    if (!ALLOWED_TRANSITIONS[from].includes(to)) {
+      throw new ConflictException(
+        `Transición inválida: ${from} -> ${to}. Desde ${from} solo se permite: ${ALLOWED_TRANSITIONS[from].join(', ')}`,
+      );
+    }
+  }
+
+  /** Valida y aplica la información obligatoria de cierre */
+  private applyClosure(
+    maintenance: Maintenance,
+    vehicle: Vehicle,
+    dto: UpdateMaintenanceStatusDto,
+  ): void {
+    const missing: string[] = [];
+    if (!dto.workPerformed) missing.push('workPerformed (trabajo realizado)');
+    if (dto.finalCost === undefined) missing.push('finalCost (costo final)');
+    if (!dto.completedAt) missing.push('completedAt (fecha de finalización)');
+    if (dto.finalMileage === undefined) missing.push('finalMileage (kilometraje final)');
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `Para completar el mantenimiento faltan: ${missing.join(', ')}`,
+      );
+    }
+
+    // Aquí TypeScript ya sabe que existen (se validó arriba)
+    const completedAt = dto.completedAt!;
+    const finalMileage = dto.finalMileage!;
+
+    if (finalMileage < Math.max(maintenance.mileage, vehicle.mileage)) {
+      throw new BadRequestException(
+        `finalMileage (${finalMileage}) no puede ser menor al kilometraje registrado (${Math.max(maintenance.mileage, vehicle.mileage)})`,
+      );
+    }
+    if (maintenance.startedAt && completedAt < maintenance.startedAt) {
+      throw new BadRequestException(
+        'completedAt no puede ser anterior al inicio del mantenimiento',
+      );
+    }
+    if (completedAt > new Date()) {
+      throw new BadRequestException('completedAt no puede ser una fecha futura');
+    }
+
+    maintenance.workPerformed = dto.workPerformed!;
+    maintenance.finalCost = dto.finalCost!;
+    maintenance.completedAt = completedAt;
+    maintenance.finalMileage = finalMileage;
+    vehicle.mileage = finalMileage; // El odómetro queda con la lectura final
+  }
+
+  private async writeLog(
+    manager: EntityManager,
+    maintenanceId: string,
+    fromStatus: MaintenanceStatus | null,
+    toStatus: MaintenanceStatus,
+    changedById: string,
+    note: string | null,
+  ): Promise<void> {
+    await manager.save(
+      manager.create(MaintenanceStatusLog, {
+        maintenanceId,
+        fromStatus,
+        toStatus,
+        changedById,
+        note,
+      }),
+    );
   }
 
   // =====================================================================
@@ -243,6 +421,16 @@ export class MaintenancesService {
       }
     }
     return maintenance;
+  }
+
+  /** Auditoría: todos los cambios de estado de un mantenimiento */
+  async findLogs(id: string): Promise<MaintenanceStatusLog[]> {
+    await this.findOne(id); // 404 si no existe
+    return this.logsRepository.find({
+      where: { maintenanceId: id },
+      relations: { changedBy: true },
+      order: { createdAt: 'ASC' },
+    });
   }
 
   // =====================================================================

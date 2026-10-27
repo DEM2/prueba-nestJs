@@ -7,10 +7,11 @@ import { WorkshopsModule } from '../workshops/workshops.module';
 import { Maintenance } from './entities/maintenance.entity';
 import { MaintenancesController } from './maintenances.controller';
 import { MaintenancesService } from './maintenances.service';
+import { MaintenanceStatusLog } from './entities/maintenance-status-log.entity';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Maintenance]),
+    TypeOrmModule.forFeature([Maintenance, MaintenanceStatusLog]),
     VehiclesModule,
     MechanicsModule,
     WorkshopsModule,
