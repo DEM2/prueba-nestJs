@@ -1,6 +1,10 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import {
+  API_KEY_HEADER,
+  SWAGGER_API_KEY_AUTH,
+} from './common/constants/metadata-keys';
 
 import { AppModule } from './app.module';
 
@@ -25,6 +29,10 @@ async function bootstrap(): Promise<void> {
     .setDescription('Gestión de mantenimientos de la flota de vehículos')
     .setVersion('1.0')
     .addBearerAuth()
+    .addApiKey(
+      { type: 'apiKey', name: API_KEY_HEADER, in: 'header' },
+      SWAGGER_API_KEY_AUTH,
+    )
     .build();
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api/docs', app, document);
